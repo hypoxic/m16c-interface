@@ -165,16 +165,21 @@ if __name__ == '__main__':
         sys.exit(1)
     logging.info("Connected to adapter version {}".format(s.adapter.version()))
 
-    # Target (M16C) link.
+    # The 'connect' check stops here, at the adapter handshake. It must NOT
+    # start a target transaction: with no target driving the busy line, the
+    # FPGA send FSM wedges in SEND_WAIT waiting for busy to go low and ignores
+    # further commands until it is power-cycled, which looks like an
+    # intermittent link. The 'v' handshake above is a pure IDLE operation and
+    # leaves the FSM in a known state.
+    if getattr(args, 'adapter_only', False):
+        logging.info("Adapter link OK (target not probed).")
+        sys.exit(0)
+
+    # Target (M16C) link, for crack/dump.
     try:
         s.connect()
         logging.info("Connected to target version {}".format(s.version()))
     except Exception as e:
-        if getattr(args, 'adapter_only', False):
-            logging.warning("Adapter link OK. Target not responding "
-                            "(expected if the target is not connected): {}"
-                            .format(e))
-            sys.exit(0)
         logging.fatal("Target not responding: {}".format(e))
         sys.exit(1)
 
