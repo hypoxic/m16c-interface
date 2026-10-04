@@ -180,6 +180,9 @@ if __name__ == '__main__':
     # hangs the FPGA: the SEND_WAIT state times out (~0.5s) and the read comes
     # back as 0xff bytes.
     if getattr(args, 'probe_target', False):
+        # Use the same clocking as crack/dump so this is a faithful test.
+        s.adapter.set_tclk(1)    # ~3 MHz target clock (Xin)
+        s.adapter.set_sclk(127)  # ~1.5 MHz serial clock
         s.adapter.reset_target()
         v = s.version()
         if v.startswith('VER'):

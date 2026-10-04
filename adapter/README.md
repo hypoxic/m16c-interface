@@ -139,6 +139,49 @@ The target should be run at 3v3. It can be powered from the board's 3V3/GND
 header pins (mind the regulator's current limit). Share a common ground
 between the board and the target.
 
+Putting the M16C into serial I/O mode
+-------------------------------------
+
+The six signals above are only the dynamic part of the link. The M16C also
+has static strap pins that select the on-chip bootloader's standard serial
+I/O (synchronous) mode. The adapter does not drive these; you wire them to
+fixed levels and they stay put for the whole session. For the M16C/60-62
+family the straps are:
+
+| M16C pin   | Level      | Purpose                                         |
+|------------|------------|-------------------------------------------------|
+| CNVss      | Vcc (high) | Run the boot-area serial rewrite program        |
+| CE (P5_0)  | Vcc (high) | Chip enable for boot mode                       |
+| EPM (P5_5) | Vss (low)  | Program-mode select                             |
+
+The adapter's dynamic signals map to the M16C UART1 pins used for the
+synchronous (clock-synchronous) protocol:
+
+| Adapter signal    | M16C pin        |
+|-------------------|-----------------|
+| SCLK              | CLK1 (P6_5)     |
+| RXD (to target)   | RxD1 (P6_6)     |
+| TXD (from target) | TxD1 (P6_7)     |
+| Busy              | RTS1/BUSY (P6_4)|
+
+plus Reset to the target's reset and Xin to its clock input.
+
+Notes:
+
+ - Pin and port numbers (P5_0, P5_5, P6_x) are for the M16C/62 group. The
+   M306K9FCLRP is in the M16C/26A group and its exact assignments can differ.
+   Confirm CNVss, CE and EPM against that device's datasheet, in the
+   "standard serial I/O mode" pin-connection table, before wiring.
+ - CNVss must be at its boot level when reset is released; the adapter pulses
+   reset, so the straps must already be set before a transaction.
+ - Only drive Xin from the adapter if the target is not already clocked. If
+   the target board has its own crystal running on Xin/Xout, leave the
+   adapter's Xin disconnected so it does not fight the oscillator.
+ - The direction labels are from the target's point of view: "TXD (from
+   target)" is the target's TxD1 output that the adapter reads, and "RXD (to
+   target)" is the target's RxD1 input that the adapter drives. Do not tie
+   TXD-to-TXD; the data lines cross over.
+
 Protocol & Architecture
 -----------------------
 
