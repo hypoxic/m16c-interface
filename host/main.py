@@ -128,6 +128,10 @@ parser_dump.add_argument('--code', '-c', help='Unlock code.', type=str,
                          required=True)
 parser_dump.set_defaults(func=dump)
 
+parser_connect = subparsers.add_parser('connect',
+        help='Check adapter (and target) connectivity, then exit.')
+parser_connect.set_defaults(func=lambda args, s: 0, adapter_only=True)
+
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -146,11 +150,32 @@ if __name__ == '__main__':
     if args.debug_protocol:
         protocol_logger = logging
 
+    if not hasattr(args, 'func'):
+        parser.print_help()
+        sys.exit(1)
+
     a = adapter.Adapter(args.port, logger=adapter_logger)
     s = serialio.SerialIO(a, logger=protocol_logger)
-    s.adapter.connect()
+
+    # Adapter (FPGA) link. Needed by everything; works without the target.
+    try:
+        s.adapter.connect()
+    except Exception as e:
+        logging.fatal("No response from adapter on {}: {}".format(args.port, e))
+        sys.exit(1)
     logging.info("Connected to adapter version {}".format(s.adapter.version()))
-    s.connect()
-    logging.info("Connected to target version {}".format(s.version()))
+
+    # Target (M16C) link.
+    try:
+        s.connect()
+        logging.info("Connected to target version {}".format(s.version()))
+    except Exception as e:
+        if getattr(args, 'adapter_only', False):
+            logging.warning("Adapter link OK. Target not responding "
+                            "(expected if the target is not connected): {}"
+                            .format(e))
+            sys.exit(0)
+        logging.fatal("Target not responding: {}".format(e))
+        sys.exit(1)
 
     sys.exit(args.func(args, s) or 0)
