@@ -129,8 +129,12 @@ parser_dump.add_argument('--code', '-c', help='Unlock code.', type=str,
 parser_dump.set_defaults(func=dump)
 
 parser_connect = subparsers.add_parser('connect',
-        help='Check adapter (and target) connectivity, then exit.')
+        help='Check the adapter (FPGA) link only, then exit.')
 parser_connect.set_defaults(func=lambda args, s: 0, adapter_only=True)
+
+parser_probe = subparsers.add_parser('probe',
+        help='Probe the target (DUT): report its SerialIO version, then exit.')
+parser_probe.set_defaults(func=lambda args, s: 0, probe_target=True)
 
 
 if __name__ == '__main__':
@@ -165,15 +169,25 @@ if __name__ == '__main__':
         sys.exit(1)
     logging.info("Connected to adapter version {}".format(s.adapter.version()))
 
-    # The 'connect' check stops here, at the adapter handshake. It must NOT
-    # start a target transaction: with no target driving the busy line, the
-    # FPGA send FSM wedges in SEND_WAIT waiting for busy to go low and ignores
-    # further commands until it is power-cycled, which looks like an
-    # intermittent link. The 'v' handshake above is a pure IDLE operation and
-    # leaves the FSM in a known state.
+    # The 'connect' check stops here, at the adapter handshake, so it verifies
+    # the serial path to the FPGA without touching the target at all.
     if getattr(args, 'adapter_only', False):
         logging.info("Adapter link OK (target not probed).")
         sys.exit(0)
+
+    # The 'probe' check resets the target and reads its SerialIO version,
+    # reporting whether a valid target is present. A missing target no longer
+    # hangs the FPGA: the SEND_WAIT state times out (~0.5s) and the read comes
+    # back as 0xff bytes.
+    if getattr(args, 'probe_target', False):
+        s.adapter.reset_target()
+        v = s.version()
+        if v.startswith('VER'):
+            logging.info("Target present. SerialIO version: {}".format(v))
+            sys.exit(0)
+        logging.warning("No valid target response (got {!r}). Check DUT power, "
+                        "wiring, and that the busy line is driven.".format(v))
+        sys.exit(2)
 
     # Target (M16C) link, for crack/dump.
     try:

@@ -263,6 +263,14 @@ class Top(Module):
         self.comb += bit_strobe.eq(bit_counter == 0)
         next_bit = Signal()
 
+        # Timeout for SEND_WAIT. If the target never deasserts busy (for
+        # example no target is connected, so the busy input floats high), abort
+        # the transaction and return to IDLE instead of hanging forever. About
+        # 0.5s at 12 MHz, which is far longer than any legitimate inter-byte
+        # busy, so it only ever fires on a missing or stuck target.
+        send_wait_timeout = self.CLKFREQ // 2
+        send_wait_timer = Signal(max=send_wait_timeout + 1)
+
         self.fsm.act('SEND_START',
             NextState('SEND_PREPARE'),
             NextValue(bit_index, 0),
@@ -271,6 +279,7 @@ class Top(Module):
         self.fsm.act('SEND_PREPARE',
             If(self.txbuffer.readable,
                 NextValue(send_byte, self.txbuffer.dout),
+                NextValue(send_wait_timer, 0),
                 NextState('SEND_WAIT'),
             ).Else(
                 NextValue(response, ord('.')),
@@ -278,11 +287,15 @@ class Top(Module):
             )
         )
 
-        # Wait for target to not be busy.
+        # Wait for target to not be busy, or time out and abort.
         self.fsm.act('SEND_WAIT',
             If(~target_busy,
                 NextValue(bit_counter, sclk_divider),
                 NextState('SEND_FALLING'),
+            ).Elif(send_wait_timer == send_wait_timeout,
+                NextState('SEND_ABORT'),
+            ).Else(
+                NextValue(send_wait_timer, send_wait_timer + 1),
             )
         )
 
@@ -317,6 +330,18 @@ class Top(Module):
         # Write received byte to read FIFO.
         self.fsm.act('SEND_WRITEBACK',
             NextState('SEND_PREPARE')
+        )
+
+        # Transaction timed out waiting for the target's busy line. Drain any
+        # unsent bytes from the TX FIFO and ack the host so it does not hang.
+        # Whatever was received so far stays in the RX FIFO; bytes the host
+        # reads beyond that come back as 0xff, and the next transaction starts
+        # with a flush. This returns the FSM to IDLE instead of wedging.
+        self.fsm.act('SEND_ABORT',
+            If(~self.txbuffer.readable,
+                NextValue(response, ord('.')),
+                NextState('RESPOND_BYTE'),
+            )
         )
 
         # Downcounter for requested bytes to read from FIFO.
@@ -360,6 +385,7 @@ class Top(Module):
             ),
             self.txbuffer.re.eq(
                 self.fsm.ongoing('SEND_PREPARE') |
+                self.fsm.ongoing('SEND_ABORT') |
                 self.fsm.ongoing('FIFO_FLUSH')
             ),
             self.txbuffer.din.eq(self.uart_rx.dout),
