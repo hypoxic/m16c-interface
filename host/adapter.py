@@ -41,7 +41,7 @@ class AdapterException(Exception):
 class Adapter(object):
     TIMEOUT = 3.0
 
-    def __init__(self, port, baud_rate=1200000, logger=None):
+    def __init__(self, port, baud_rate=115200, logger=None):
         self.serial = serial.Serial(port, baud_rate, timeout=self.TIMEOUT)
         self.logger = logger
 

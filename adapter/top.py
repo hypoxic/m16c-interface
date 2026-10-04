@@ -38,8 +38,11 @@ import uart
 class Top(Module):
     # Board clock frequency.
     CLKFREQ = 12000000
-    # Host UART baud rate.
-    BAUDRATE = 1200000
+    # Host UART baud rate. 115200 is slow enough to stay reliable over a USB
+    # isolator and clip-lead wiring. At CLKFREQ=12 MHz the divisor is 104, for
+    # an actual 115384 baud (0.16% error). This does not affect flashing, which
+    # uses the on-board FT232H, not this UART.
+    BAUDRATE = 115200
 
     def __init__(self, platform):
         # Instantiate and connect UART cores to host.
