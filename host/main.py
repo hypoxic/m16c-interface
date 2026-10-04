@@ -93,7 +93,7 @@ def dump(args, s):
     start = 0x0e00
     end = 0x0fff
 
-    with open(args.output, 'w') as f:
+    with open(args.output, 'wb') as f:
         logging.info("Writing pages {:x}-{:x} to {}...".format(start, end,
                                                                args.output))
         for page in range(start, end+1):
