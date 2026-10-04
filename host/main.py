@@ -90,8 +90,11 @@ def dump(args, s):
         return
     logging.info("Target unlocked.")
 
-    start = 0x0e00
-    end = 0x0fff
+    # Pages are the top 16 bits of the address (256 bytes each). The default
+    # range covers the full 384 KB flash of the M16C/62P M30626FHPFP
+    # (0xA0000-0xFFFFF). Override with --start-page/--end-page for other parts.
+    start = args.start_page
+    end = args.end_page
 
     with open(args.output, 'wb') as f:
         logging.info("Writing pages {:x}-{:x} to {}...".format(start, end,
@@ -156,6 +159,14 @@ parser_dump.add_argument('--output', '-o', help='Output file.', type=str,
                          required=True)
 parser_dump.add_argument('--code', '-c', help='Unlock code.', type=str,
                          required=True)
+parser_dump.add_argument('--start-page', type=lambda x: int(x, 16),
+                         default=0x0a00,
+                         help='First 256-byte page, hex. Default 0a00 '
+                              '(0xA0000, start of M16C/62P 384KB flash).')
+parser_dump.add_argument('--end-page', type=lambda x: int(x, 16),
+                         default=0x0fff,
+                         help='Last page, hex, inclusive. Default 0fff '
+                              '(0xFFFF00).')
 parser_dump.set_defaults(func=dump)
 
 parser_connect = subparsers.add_parser('connect',
