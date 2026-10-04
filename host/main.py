@@ -102,6 +102,36 @@ def dump(args, s):
             f.write(data)
 
 
+def readstatus(args, s):
+    # Diagnostic: unlock with the given code and print the raw status bytes,
+    # so the lock state can be read directly instead of trusting the
+    # success/fail decode. Useful across bootloader versions.
+    s.adapter.set_tclk(1)
+    s.adapter.set_sclk(127)
+    try:
+        code = args.code.decode('hex')
+    except TypeError:
+        logging.fatal("Code must be in hexadecimal format.")
+        return 1
+    if len(code) != 7:
+        logging.fatal("Code must be 7 bytes long.")
+        return 1
+
+    s.unlock(code)
+    raw = s.adapter.execute('\x70', 2)
+    srd, srd1 = ord(raw[0]), ord(raw[1])
+    logging.info("SRD  = 0x%02x  %s" % (srd, format(srd, '08b')))
+    logging.info("SRD1 = 0x%02x  %s" % (srd1, format(srd1, '08b')))
+    decoded = (srd1 >> 2) & 3
+    logging.info("unlock_status decode (SRD1>>2)&3 = %d  (%d == unlocked)"
+                 % (decoded, serialio.UNLOCK_SUCCESSFUL))
+    if decoded == serialio.UNLOCK_SUCCESSFUL:
+        logging.info("-> target reports UNLOCKED with this code.")
+    else:
+        logging.info("-> target reports LOCKED with this code.")
+    return 0
+
+
 parser = argparse.ArgumentParser(
         description='Renesas M16C SerialIO Programmer.')
 parser.add_argument('--port', '-p', help='Adapter serial port.',
@@ -135,6 +165,12 @@ parser_connect.set_defaults(func=lambda args, s: 0, adapter_only=True)
 parser_probe = subparsers.add_parser('probe',
         help='Probe the target (DUT): report its SerialIO version, then exit.')
 parser_probe.set_defaults(func=lambda args, s: 0, probe_target=True)
+
+parser_status = subparsers.add_parser('status',
+        help='Unlock with a code and print the raw status bytes (diagnostic).')
+parser_status.add_argument('--code', '-c', help='Unlock code.', type=str,
+                           required=True)
+parser_status.set_defaults(func=readstatus)
 
 
 if __name__ == '__main__':
