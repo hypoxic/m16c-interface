@@ -30,7 +30,7 @@ import sys
 
 from migen import *
 from migen.genlib.fifo import SyncFIFOBuffered
-from migen.build.generic_platform import Subsignal, Pins, IOStandard
+from migen.build.generic_platform import Subsignal, Pins, IOStandard, ConstraintError
 from migen.build.platforms import icestick
 
 import uart
@@ -50,6 +50,15 @@ class Top(Module):
             serial.tx.eq(self.uart_tx.tx),
             self.uart_rx.rx.eq(serial.rx),
         ]
+
+        # If a board exposes a configuration-flash chip-select that must be
+        # held inactive during normal operation, drive it high. Boards without
+        # this resource simply skip it.
+        try:
+            spiflash_cs = platform.request('spiflash_cs')
+            self.comb += spiflash_cs.eq(1)
+        except ConstraintError:
+            pass
 
         # Heartbeat LED.
         led = platform.request('user_led')
@@ -401,7 +410,7 @@ class Top(Module):
         ]
 
 
-def main():
+def build_icestick():
     plat = icestick.Platform()
     debugpins = [119, 118, 117, 116, 115, 114, 113, 112]
     plat.add_extension([
@@ -419,8 +428,79 @@ def main():
     ])
     # Randomize seed because it doesn't get routed with the default of 1.
     plat.toolchain.pnr_opt = "-q -r"
-    plat.build(Top(plat))
-    plat.create_programmer().flash(0, 'build/top.bin')
+    return plat
+
+
+def build_upduino():
+    # Imported lazily so the iCEStick build does not require this module.
+    import upduino
+    # All adapter resources ('serial', 'user_led', 'sio', 'debug',
+    # 'spiflash_cs') are defined in the UPduino platform itself, so no board
+    # extension is needed here.
+    return upduino.Platform()
+
+
+BOARDS = {
+    'icestick': build_icestick,
+    'upduino': build_upduino,
+}
+
+# synth_ice40's default abc9 LUT mapping crashes current yosys nightlies in the
+# experimental aiger2 writer ("Assert data_start == f->tellp() failed"). The
+# built-in LUT techmapper (-noabc) avoids it; this design has huge timing margin
+# so the slightly worse mapping does not matter. Remove it with a stable yosys.
+SYNTH_OPTS = "-noabc"
+
+
+def run_flow(plat, build_dir="build", do_flash=False):
+    """Build the bitstream by invoking the tools directly.
+
+    Migen's own Windows script runner ("cmd /c build_top.bat") is unreliable
+    here, so we generate the sources (run=False) and then run yosys,
+    nextpnr-ice40 and icepack ourselves. yosys, nextpnr-ice40, icepack and
+    iceprog must be on PATH (e.g. from the YosysHQ OSS CAD Suite).
+    """
+    import os
+    import subprocess
+
+    plat.build(Top(plat), build_dir=build_dir, run=False, synth_opts=SYNTH_OPTS)
+
+    _, series_size, package = plat.toolchain.parse_device_string(plat.device)
+    pnr_pkg_opts = ["--" + series_size, "--package", package]
+
+    steps = [
+        ["yosys", "-q", "-l", "top.rpt", "top.ys"],
+        ["nextpnr-ice40"] + pnr_pkg_opts +
+            ["--pcf", "top.pcf", "--json", "top.json",
+             "--asc", "top.txt", "--pre-pack", "top_pre_pack.py"],
+        ["icepack", "top.txt", "top.bin"],
+    ]
+    if do_flash:
+        # Writes to the configuration flash at offset 0.
+        steps.append(["iceprog", "top.bin"])
+
+    cwd = os.path.join(os.getcwd(), build_dir)
+    for cmd in steps:
+        print("+ " + " ".join(cmd))
+        subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def main():
+    # Usage: top.py [board] [flash]
+    #   board: 'upduino' (default) or 'icestick'
+    #   flash: append 'flash' to also program the board with iceprog
+    # Building and flashing are separated because flashing needs the board
+    # present and (on Windows) its FTDI bound to WinUSB; see adapter/README.md.
+    args = [a for a in sys.argv[1:]]
+    do_flash = 'flash' in args
+    args = [a for a in args if a != 'flash']
+    board = args[0] if args else 'upduino'
+    if board not in BOARDS:
+        print('Unknown board "{}". Choose one of: {}'.format(
+            board, ', '.join(sorted(BOARDS))))
+        return 1
+    plat = BOARDS[board]()
+    run_flow(plat, do_flash=do_flash)
 
 
 if __name__ == '__main__':
