@@ -45,6 +45,13 @@ def crack(args, s):
             for _ in range(args.samples):
                 # Send code right-padded with 0xDE.
                 bin_code = ''.join(chr(c) for c in code) + chr(try_byte)
+                # Reset the target before each attempt (unless --no-reset) so
+                # the ID check is evaluated fresh. A bootloader that locks
+                # after one failed check returns a constant, useless busy time
+                # on every later attempt without this. Needs the reset line
+                # wired to the target.
+                if not args.no_reset:
+                    s.adapter.reset_target()
                 s.unlock(bin_code.ljust(7, '\xDE'))
                 # Measure response time.
                 samples.append(s.adapter.busy_timer())
@@ -152,6 +159,10 @@ subparsers = parser.add_subparsers(help='Mode of operation.')
 parser_crack = subparsers.add_parser('crack', help='Crack security PIN.')
 parser_crack.add_argument('--samples', help='Samples per byte.', type=int,
                           default=3)
+parser_crack.add_argument('--no-reset', action='store_true',
+                          help='Do not reset the target before each attempt '
+                               '(old behaviour; faster but fails on bootloaders '
+                               'that lock after one failed check).')
 parser_crack.set_defaults(func=crack)
 
 parser_dump = subparsers.add_parser('dump', help='Dump flash memory.')
