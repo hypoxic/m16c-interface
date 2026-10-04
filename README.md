@@ -1,3 +1,12 @@
+> **Mirror notice.** This is a public mirror and fork of q3k's
+> `m16c-interface`. The upstream repository lives at
+> https://codeberg.org/q3k/m16c-interface and all original work is by
+> Serge 'q3k' Bazanski and contributors, released under the BSD 2-clause
+> license (see COPYING). This fork adds support for the tinyVision.ai
+> UPduino v3.1 (Lattice iCE40UP5K) board; see adapter/README.md for the
+> board-specific build and wiring. Please send upstream-relevant changes
+> to the Codeberg repository.
+
 Renesas M16C programmer
 =======================
 
