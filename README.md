@@ -26,6 +26,15 @@ The following targets are know to work with this project:
 | Device      | Can dump flash memory | Can recover PIN | Tested by     |
 |-------------|-----------------------|-----------------|---------------|
 | M306K9FCLRP | YES                   | YES             | q3k, joegrand |
+| M30626FHPFP | YES                   | NO (see note)   | HYPOXIC       |
+
+Note on the M30626FHPFP (M16C/62P, bootloader VER.4.04): its flash was dumped
+and re-flashed successfully over a UPduino v3.1 build of the adapter, but the
+PIN-cracking timing attack does not work. VER.4.04 normalizes the ID-compare
+time (constant busy duration regardless of the key), so there is no timing
+signal to exploit. It was read using the default all-zero key. See
+host/README.md for the details and the connect/probe/status/flash commands,
+and adapter/README.md for the UPduino wiring and M16C boot-mode straps.
 
 License
 -------
