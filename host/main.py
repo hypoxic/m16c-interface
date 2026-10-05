@@ -178,16 +178,26 @@ def download_exec(args, s):
     # Faster serial clock for the multi-byte transfer.
     s.adapter.set_sclk(127)
 
-    # Lock state before we start.
+    # Clear the status register so any change is attributable to the download.
+    try:
+        s.adapter.execute('\x50', 0)   # CLEAR STATUS REGISTER
+    except Exception:
+        pass
     before = s.adapter.execute('\x70', 2)
-    srd1b = ord(before[1])
-    logging.info("Before: SRD1=0x{:02x} (ID {})".format(
-        srd1b, "verified" if (srd1b & 0x0c) == 0x0c else "LOCKED"))
+    srd0b, srd1b = ord(before[0]), ord(before[1])
+    logging.info("Before: SRD=0x{:02x} SRD1=0x{:02x} (ID {})".format(
+        srd0b, srd1b, "verified" if (srd1b & 0x0c) == 0x0c else "LOCKED"))
 
-    # Send the download command. No immediate reply is expected.
+    # Send the download command. No immediate reply is expected. Time it:
+    # a ~0.5s send (or a multiple) means the FPGA SEND_WAIT timed out
+    # mid-transfer because the target stopped toggling busy, a transport
+    # problem rather than the command being rejected.
     cmd = (chr(0xFA) + chr(length & 0xFF) + chr((length >> 8) & 0xFF)
            + chr(checksum) + prog)
+    t0 = time.time()
     s.adapter.execute(cmd, 0)
+    dt = time.time() - t0
+    logging.info("Download send: {} bytes in {:.2f}s".format(len(cmd), dt))
     time.sleep(0.3)  # let it verify the checksum/CRC and possibly jump
 
     # If the stub executed, the bootloader is gone and this read fails or
@@ -205,10 +215,10 @@ def download_exec(args, s):
         logging.info("After:  SRD=0x{:02x} SRD1=0x{:02x}".format(srd0, srd1a))
         bootloader_alive = not (srd0 == 0xff and srd1a == 0xff)
         if bootloader_alive:
-            logging.info("  checksum match (SRD1&0x10): {}".format(
-                bool(srd1a & 0x10)))
-            logging.info("  download completed (SRD1&0x80): {}".format(
-                bool(srd1a & 0x80)))
+            logging.info("  checksum match (SRD1&0x10): {}".format(bool(srd1a & 0x10)))
+            logging.info("  download completed (SRD1&0x80): {}".format(bool(srd1a & 0x80)))
+            logging.info("  rx timeout (SRD1&0x02): {}".format(bool(srd1a & 0x02)))
+            logging.info("  SRD1 changed by download: {}".format(srd1a != srd1b))
 
     # Does the bootloader still answer a normal command?
     try:
@@ -221,21 +231,27 @@ def download_exec(args, s):
 
     logging.info("----")
     if not bootloader_alive:
-        logging.info("RESULT: bootloader stopped responding after the download.")
-        logging.info("  The CPU most likely jumped to the downloaded code at")
-        logging.info("  0x600. That means 0xFA EXECUTES on a LOCKED chip, so the")
-        logging.info("  download-execute bypass is open and a reader stub can")
-        logging.info("  dump flash. If the stub drives P8_0, scope it to confirm.")
-        logging.info("  Power-cycle or reset to recover the bootloader.")
+        logging.info("RESULT: bootloader stopped responding -> it JUMPED to our")
+        logging.info("  code at 0x600. 0xFA EXECUTES on a LOCKED chip: the")
+        logging.info("  download-execute bypass is open. Scope P8_0 to confirm,")
+        logging.info("  power-cycle to recover.")
     elif srd1a is not None and (srd1a & 0x10):
-        logging.info("RESULT: download ACCEPTED (checksum matched) but no jump.")
-        logging.info("  0xFA is NOT ID-gated: the loader processed our data while")
-        logging.info("  locked. It likely declined to jump on the CRC16 at 0x0CFD")
-        logging.info("  or the program size. Next step: a CRC16-correct stub.")
+        logging.info("RESULT: download ACCEPTED (checksum matched), no jump.")
+        logging.info("  0xFA is NOT ID-gated. It declined to jump (CRC16 at 0x0CFD")
+        logging.info("  or program size). Next: a CRC16-correct reader stub.")
+    elif srd1a is not None and (srd1a & 0x02) and not (srd1b & 0x02):
+        logging.info("RESULT: the download set the RX-timeout flag.")
+        logging.info("  The loader began receiving but did not get all the bytes in")
+        logging.info("  time: a TRANSPORT problem, not gating. See the send time")
+        logging.info("  above; our sync link likely stalled or aborted mid-transfer.")
+    elif srd1a is not None and srd1a == srd1b:
+        logging.info("RESULT: status unchanged by the download.")
+        logging.info("  The command had no effect, pointing to 0xFA being ID-gated")
+        logging.info("  on this locked chip. If the send time was ~instant with no")
+        logging.info("  RX timeout, transport is fine and gating is the explanation.")
     else:
         logging.info("RESULT: download not accepted (no checksum match).")
-        logging.info("  Either 0xFA is ID-gated on this chip, or the framing is")
-        logging.info("  off. Re-check the program file and the 0xFA format.")
+        logging.info("  Gated, or a framing/transport issue. See the bytes above.")
     return 0
 
 
