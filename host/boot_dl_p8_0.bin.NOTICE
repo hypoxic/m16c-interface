@@ -1,0 +1,9 @@
+boot_dl_p8_0.bin is an M16C download-mode test program (it toggles port
+pin P8_0 in a loop) used by the `download` command to probe the bootloader's
+0xFA download-to-RAM-and-execute feature.
+
+It is taken unmodified from the m16c-flasher project:
+  https://github.com/truhy/m16c-flasher  (sourcecode/scripts_linux/boot_dl_p8_0.bin)
+
+m16c-flasher is MIT licensed, Copyright (c) 2023 Truong Hy. The MIT license
+text is in that repository's LICENSE file.

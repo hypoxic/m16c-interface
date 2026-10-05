@@ -142,6 +142,103 @@ def readstatus(args, s):
     return 0
 
 
+def download_exec(args, s):
+    """Test the bootloader's 0xFA download-to-RAM-and-execute command.
+
+    Framing (from truhy/m16c-flasher, m16c_cmds.cpp):
+        [0xFA][len_lo][len_hi][checksum][program bytes]
+    checksum = low 8 bits of the sum of the program bytes. The program's first
+    8 bytes land at RAM 0x402-0x409 (they overlap the bootloader version
+    string, so they are effectively discarded) and the rest at 0x600. The
+    bootloader jumps to 0x600 only if the checksum, and a CRC16 it keeps at RAM
+    0x0CFD, are correct.
+
+    On a locked chip this answers the key question: is 0xFA gated by the ID
+    code? The download status bits (SRD1 & 0x10 = checksum match, & 0x80 =
+    completed, & 0x0C = ID verified) and whether the bootloader keeps
+    responding tell us. If the stub runs, the bootloader stops answering
+    because the CPU jumped to our code.
+    """
+    import time
+    try:
+        with open(args.file, 'rb') as f:
+            prog = f.read()
+    except IOError as e:
+        logging.fatal("Cannot read program file {}: {}".format(args.file, e))
+        return 1
+    if not prog:
+        logging.fatal("Program file is empty.")
+        return 1
+
+    length = len(prog)
+    checksum = sum(bytearray(prog)) & 0xFF
+    logging.info("Download program '{}': {} bytes, checksum=0x{:02x}".format(
+        args.file, length, checksum))
+
+    # Faster serial clock for the multi-byte transfer.
+    s.adapter.set_sclk(127)
+
+    # Lock state before we start.
+    before = s.adapter.execute('\x70', 2)
+    srd1b = ord(before[1])
+    logging.info("Before: SRD1=0x{:02x} (ID {})".format(
+        srd1b, "verified" if (srd1b & 0x0c) == 0x0c else "LOCKED"))
+
+    # Send the download command. No immediate reply is expected.
+    cmd = (chr(0xFA) + chr(length & 0xFF) + chr((length >> 8) & 0xFF)
+           + chr(checksum) + prog)
+    s.adapter.execute(cmd, 0)
+    time.sleep(0.3)  # let it verify the checksum/CRC and possibly jump
+
+    # If the stub executed, the bootloader is gone and this read fails or
+    # returns 0xff padding.
+    raw = None
+    try:
+        raw = s.adapter.execute('\x70', 2)
+    except Exception as e:
+        logging.info("No status response after download ({}).".format(e))
+
+    bootloader_alive = False
+    srd1a = None
+    if raw is not None:
+        srd0, srd1a = ord(raw[0]), ord(raw[1])
+        logging.info("After:  SRD=0x{:02x} SRD1=0x{:02x}".format(srd0, srd1a))
+        bootloader_alive = not (srd0 == 0xff and srd1a == 0xff)
+        if bootloader_alive:
+            logging.info("  checksum match (SRD1&0x10): {}".format(
+                bool(srd1a & 0x10)))
+            logging.info("  download completed (SRD1&0x80): {}".format(
+                bool(srd1a & 0x80)))
+
+    # Does the bootloader still answer a normal command?
+    try:
+        v = s.version()
+        if v.startswith('VER'):
+            bootloader_alive = True
+            logging.info("Bootloader still responds to version: {!r}".format(v))
+    except Exception:
+        pass
+
+    logging.info("----")
+    if not bootloader_alive:
+        logging.info("RESULT: bootloader stopped responding after the download.")
+        logging.info("  The CPU most likely jumped to the downloaded code at")
+        logging.info("  0x600. That means 0xFA EXECUTES on a LOCKED chip, so the")
+        logging.info("  download-execute bypass is open and a reader stub can")
+        logging.info("  dump flash. If the stub drives P8_0, scope it to confirm.")
+        logging.info("  Power-cycle or reset to recover the bootloader.")
+    elif srd1a is not None and (srd1a & 0x10):
+        logging.info("RESULT: download ACCEPTED (checksum matched) but no jump.")
+        logging.info("  0xFA is NOT ID-gated: the loader processed our data while")
+        logging.info("  locked. It likely declined to jump on the CRC16 at 0x0CFD")
+        logging.info("  or the program size. Next step: a CRC16-correct stub.")
+    else:
+        logging.info("RESULT: download not accepted (no checksum match).")
+        logging.info("  Either 0xFA is ID-gated on this chip, or the framing is")
+        logging.info("  off. Re-check the program file and the 0xFA format.")
+    return 0
+
+
 parser = argparse.ArgumentParser(
         description='Renesas M16C SerialIO Programmer.')
 parser.add_argument('--port', '-p', help='Adapter serial port.',
@@ -193,6 +290,14 @@ parser_status = subparsers.add_parser('status',
 parser_status.add_argument('--code', '-c', help='Unlock code.', type=str,
                            required=True)
 parser_status.set_defaults(func=readstatus)
+
+parser_download = subparsers.add_parser('download',
+        help='Test the 0xFA download-to-RAM-and-execute command (bypass probe).')
+parser_download.add_argument('--file', '-f', type=str,
+                             default='boot_dl_p8_0.bin',
+                             help='Program binary to download. Default is the '
+                                  'bundled P8_0-toggle stub.')
+parser_download.set_defaults(func=download_exec)
 
 
 if __name__ == '__main__':
