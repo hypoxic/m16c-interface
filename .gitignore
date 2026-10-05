@@ -2,3 +2,6 @@
 *swp
 build
 venv
+dump.bin
+dump-*.bin
+*.dump
