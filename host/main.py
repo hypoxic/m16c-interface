@@ -344,6 +344,10 @@ def flash(args, s):
         return 1
     logging.info("Target unlocked.")
 
+    # Set the serial clock. The reset default is very slow; a lower divider is
+    # much faster. Verify (read-back) is the safety net if a value is too fast.
+    s.adapter.set_sclk(args.sclk)
+
     # Erase each affected block, then program all of its non-blank pages.
     for lo, hi in sorted(blocks):
         logging.info("Erasing block 0x{:05X}-0x{:05X}...".format(lo, hi))
@@ -369,8 +373,10 @@ def flash(args, s):
     bad = 0
     for lo, hi in sorted(blocks):
         for addr in range(lo, hi + 1, 256):
-            got = s.read_page(addr >> 8)
             want = mod[addr - FLASH_BASE: addr - FLASH_BASE + 256]
+            if want == '\xff' * 256:
+                continue  # blank page: erase left it 0xff, nothing programmed
+            got = s.read_page(addr >> 8)
             if got != want:
                 bad += 1
                 logging.error("  mismatch at 0x{:05X}".format(addr))
@@ -453,6 +459,11 @@ parser_flash.add_argument('--write', action='store_true',
                           help='Actually erase/program. Default is a dry run.')
 parser_flash.add_argument('--allow-vector-block', action='store_true',
                           help='Permit erasing block 0xFF000-0xFFFFF (ID/vectors).')
+parser_flash.add_argument('--sclk', type=int, default=127,
+                          help='Serial clock divider, 0-1023, lower is faster '
+                               '(default 127). flash previously ran at the slow '
+                               'reset default; try 15 or 7 for more speed, '
+                               'verify will catch a too-fast setting.')
 parser_flash.set_defaults(func=flash)
 
 
