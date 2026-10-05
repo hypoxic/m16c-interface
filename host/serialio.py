@@ -42,6 +42,9 @@ class SerialIO(object):
     CMD_UNLOCK = '\xF5\xDF\xFF\x0F\x07'
     CMD_VERSION = '\xFB'
     CMD_READ = '\xFF'
+    CMD_PROGRAM = '\x41'
+    CMD_ERASE = '\x20'
+    CMD_CLEAR_STATUS = '\x50'
 
     def __init__(self, adapter, logger=None):
         self.adapter = adapter
@@ -79,5 +82,41 @@ class SerialIO(object):
     
     def read_page(self, page):
         return self._execute(self.CMD_READ + struct.pack('<H', page), 256)
+
+    def status(self):
+        """Returns (SRD, SRD1) status register bytes."""
+        raw = self._execute('\x70', 2)
+        return ord(raw[0]), ord(raw[1])
+
+    def clear_status(self):
+        self._execute(self.CMD_CLEAR_STATUS, 0)
+
+    def erase_block(self, block_high_addr):
+        """Erases the flash block whose highest address is block_high_addr.
+
+        The erase runs on the target after the command bytes are sent, holding
+        the busy line, so we wait for it with the adapter busy timer rather
+        than a serial transaction (which the FPGA would time out). Returns the
+        (SRD, SRD1) status after completion.
+        """
+        cmd = (self.CMD_ERASE
+               + chr((block_high_addr >> 8) & 0xFF)
+               + chr((block_high_addr >> 16) & 0xFF)
+               + '\xD0')
+        self._execute(cmd, 0)
+        self.adapter.busy_timer()      # block until the erase finishes
+        return self.status()
+
+    def program_page(self, addr, data256):
+        """Programs one 256-byte page at addr (must be 256-aligned)."""
+        if len(data256) != 256:
+            raise SerialIOException('program_page needs exactly 256 bytes')
+        cmd = (self.CMD_PROGRAM
+               + chr((addr >> 8) & 0xFF)
+               + chr((addr >> 16) & 0xFF)
+               + data256)
+        self._execute(cmd, 0)
+        self.adapter.busy_timer()      # block until the program finishes
+        return self.status()
     
 

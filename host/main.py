@@ -255,6 +255,132 @@ def download_exec(args, s):
     return 0
 
 
+# M16C/62P 384KB flash blocks (M30626FHPFP): (low_addr, high_addr).
+# From truhy/m16c-flasher m16c_mem_map.cpp (flash_blocks_m16c62_384k).
+FLASH_BASE = 0xA0000
+FLASH_SIZE = 0x100000 - FLASH_BASE  # 0x60000 = 384 KB
+VECTOR_BLOCK = (0xFF000, 0xFFFFF)   # holds the ID code and reset vectors
+FLASH_BLOCKS_384K = [
+    (0xA0000, 0xAFFFF),
+    (0xB0000, 0xBFFFF),
+    (0xC0000, 0xCFFFF),
+    (0xD0000, 0xDFFFF),
+    (0xE0000, 0xEFFFF),
+    (0xF0000, 0xF7FFF),
+    (0xF8000, 0xF9FFF),
+    (0xFA000, 0xFBFFF),
+    (0xFC000, 0xFDFFF),
+    (0xFE000, 0xFEFFF),
+    VECTOR_BLOCK,
+]
+
+
+def _block_of(addr):
+    for lo, hi in FLASH_BLOCKS_384K:
+        if lo <= addr <= hi:
+            return (lo, hi)
+    return None
+
+
+def flash(args, s):
+    # Load the modified image and the original to diff against.
+    try:
+        with open(args.image, 'rb') as f:
+            mod = f.read()
+        with open(args.orig, 'rb') as f:
+            orig = f.read()
+    except IOError as e:
+        logging.fatal("Cannot read image: {}".format(e))
+        return 1
+    if len(mod) != FLASH_SIZE or len(orig) != FLASH_SIZE:
+        logging.fatal("Both images must be exactly 0x{:X} ({}) bytes; got "
+                      "image={} orig={}".format(FLASH_SIZE, FLASH_SIZE,
+                                                len(mod), len(orig)))
+        return 1
+
+    # Find 256-byte pages that differ, grouped by block.
+    blocks = {}
+    for off in range(0, FLASH_SIZE, 256):
+        if mod[off:off + 256] != orig[off:off + 256]:
+            b = _block_of(FLASH_BASE + off)
+            blocks.setdefault(b, []).append(FLASH_BASE + off)
+
+    if not blocks:
+        logging.info("Image matches the original. Nothing to flash.")
+        return 0
+
+    logging.info("Changes to write:")
+    for b in sorted(blocks):
+        logging.info("  block 0x{:05X}-0x{:05X}: {} changed page(s)".format(
+            b[0], b[1], len(blocks[b])))
+        if b == VECTOR_BLOCK:
+            logging.warning("    ^ holds the ID code and reset vectors.")
+
+    if VECTOR_BLOCK in blocks and not args.allow_vector_block:
+        logging.fatal("Refusing to erase the ID/vector block {:05X}-{:05X}. "
+                      "Re-run with --allow-vector-block to override."
+                      .format(*VECTOR_BLOCK))
+        return 1
+
+    if not args.write:
+        logging.info("Dry run (pass --write to erase and program). Each changed")
+        logging.info("block is erased whole, then re-programmed from the image,")
+        logging.info("then read back and verified.")
+        return 0
+
+    # Unlock.
+    try:
+        code = args.code.decode('hex')
+    except (TypeError, ValueError):
+        logging.fatal("Code must be hexadecimal.")
+        return 1
+    if len(code) != 7:
+        logging.fatal("Code must be 7 bytes.")
+        return 1
+    s.clear_status()
+    s.unlock(code)
+    if s.unlock_status() != serialio.UNLOCK_SUCCESSFUL:
+        logging.fatal("Target did not unlock with the given code.")
+        return 1
+    logging.info("Target unlocked.")
+
+    # Erase each affected block, then program all of its non-blank pages.
+    for lo, hi in sorted(blocks):
+        logging.info("Erasing block 0x{:05X}-0x{:05X}...".format(lo, hi))
+        s.clear_status()
+        srd0, _ = s.erase_block(hi)
+        if srd0 & 0x20:
+            logging.fatal("Erase error on 0x{:05X} (SRD=0x{:02X}).".format(lo, srd0))
+            return 1
+        logging.info("  programming...")
+        for addr in range(lo, hi + 1, 256):
+            page = mod[addr - FLASH_BASE: addr - FLASH_BASE + 256]
+            if page == '\xff' * 256:
+                continue  # erase already left this page blank
+            s.clear_status()
+            srd0, _ = s.program_page(addr, page)
+            if srd0 & 0x10:
+                logging.fatal("Program error at 0x{:05X} (SRD=0x{:02X}).".format(
+                    addr, srd0))
+                return 1
+
+    # Verify by reading the affected blocks back.
+    logging.info("Verifying...")
+    bad = 0
+    for lo, hi in sorted(blocks):
+        for addr in range(lo, hi + 1, 256):
+            got = s.read_page(addr >> 8)
+            want = mod[addr - FLASH_BASE: addr - FLASH_BASE + 256]
+            if got != want:
+                bad += 1
+                logging.error("  mismatch at 0x{:05X}".format(addr))
+    if bad:
+        logging.fatal("Verify FAILED: {} page(s) differ.".format(bad))
+        return 1
+    logging.info("Verify OK. Flash updated successfully.")
+    return 0
+
+
 parser = argparse.ArgumentParser(
         description='Renesas M16C SerialIO Programmer.')
 parser.add_argument('--port', '-p', help='Adapter serial port.',
@@ -314,6 +440,20 @@ parser_download.add_argument('--file', '-f', type=str,
                              help='Program binary to download. Default is the '
                                   'bundled P8_0-toggle stub.')
 parser_download.set_defaults(func=download_exec)
+
+parser_flash = subparsers.add_parser('flash',
+        help='Write a modified image back (erase+program changed blocks).')
+parser_flash.add_argument('--image', '-i', required=True,
+                          help='Modified full-flash image (384KB).')
+parser_flash.add_argument('--orig', default='dump.bin',
+                          help='Original image to diff against (default dump.bin).')
+parser_flash.add_argument('--code', '-c', default='00000000000000',
+                          help='Unlock code (default all zeros).')
+parser_flash.add_argument('--write', action='store_true',
+                          help='Actually erase/program. Default is a dry run.')
+parser_flash.add_argument('--allow-vector-block', action='store_true',
+                          help='Permit erasing block 0xFF000-0xFFFFF (ID/vectors).')
+parser_flash.set_defaults(func=flash)
 
 
 if __name__ == '__main__':
